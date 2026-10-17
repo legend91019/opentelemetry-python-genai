@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
@@ -15,12 +16,49 @@ from opentelemetry.instrumentation.genai.bedrock.stream import (
     AsyncBedrockConverseStreamWrapper,
     AsyncBedrockInvokeModelStreamWrapper,
     AsyncBedrockRetrieveAndGenerateStreamWrapper,
+    AsyncBedrockStreamingBodyWrapper,
     BedrockAgentEventStreamWrapper,
     BedrockConverseStreamWrapper,
     BedrockInvokeModelStreamWrapper,
     BedrockRetrieveAndGenerateStreamWrapper,
 )
 from opentelemetry.util.genai.handler import TelemetryHandler
+
+
+def _assert_invocation_is_current(invocation: Any) -> None:
+    assert (
+        trace.get_current_span().get_span_context()
+        == trace.get_current_span(invocation.context).get_span_context()
+    )
+
+
+class _ContextCheckingAsyncBody:
+    def __init__(self, data: bytes, invocation: Any) -> None:
+        self._data = data
+        self._invocation = invocation
+        self.closed = False
+
+    async def read(self, _amt: int | None = None) -> bytes:
+        _assert_invocation_is_current(self._invocation)
+        data, self._data = self._data, b""
+        return data
+
+    async def __aenter__(self) -> _ContextCheckingAsyncBody:
+        _assert_invocation_is_current(self._invocation)
+        return self
+
+    async def __aexit__(self, *_exc: Any) -> None:
+        _assert_invocation_is_current(self._invocation)
+        self.closed = True
+
+    async def aclose(self) -> None:
+        _assert_invocation_is_current(self._invocation)
+        self.closed = True
+
+    def close(self) -> None:
+        _assert_invocation_is_current(self._invocation)
+        self.closed = True
+
 
 STREAM_WRAPPERS = [
     pytest.param(BedrockConverseStreamWrapper, False, id="converse-sync"),
@@ -66,16 +104,10 @@ async def test_stream_activates_invocation_only_during_reads(
     error = ConnectionError("stream failed")
     chunk: dict[str, Any] = {}
 
-    def assert_invocation_is_current() -> None:
-        assert (
-            trace.get_current_span().get_span_context()
-            == trace.get_current_span(invocation.context).get_span_context()
-        )
-
     def produce() -> Iterator[dict[str, Any]]:
-        assert_invocation_is_current()
+        _assert_invocation_is_current(invocation)
         yield chunk
-        assert_invocation_is_current()
+        _assert_invocation_is_current(invocation)
         if ending == "error":
             raise error
 
@@ -111,6 +143,116 @@ async def test_stream_activates_invocation_only_during_reads(
         assert [item async for item in stream] == []
     else:
         assert list(stream) == []
+
+    assert context.get_current() is before
+    assert len(span_exporter.get_finished_spans()) == 1
+    assert not [
+        record
+        for record in caplog.records
+        if record.name == "opentelemetry.context" and record.levelno >= 40
+    ]
+
+
+@pytest.mark.asyncio
+async def test_streaming_body_activates_invocation_only_while_reading(
+    tracer_provider,
+    span_exporter,
+) -> None:
+    before = context.get_current()
+    invocation = TelemetryHandler(
+        tracer_provider=tracer_provider,
+    ).inference("bedrock", request_model="test-model")
+    body = _ContextCheckingAsyncBody(b"{}", invocation)
+    stream = AsyncBedrockStreamingBodyWrapper(
+        body,
+        invocation,
+        {"body": body},
+        capture_content=False,
+    )
+
+    assert context.get_current() is before
+    assert await asyncio.create_task(stream.read()) == b"{}"
+    assert context.get_current() is before
+    assert len(span_exporter.get_finished_spans()) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["aclose", "close"])
+async def test_streaming_body_scopes_early_close(
+    tracer_provider,
+    span_exporter,
+    method: str,
+) -> None:
+    before = context.get_current()
+    invocation = TelemetryHandler(
+        tracer_provider=tracer_provider,
+    ).inference("bedrock", request_model="test-model")
+    body = _ContextCheckingAsyncBody(b"{}", invocation)
+    stream = AsyncBedrockStreamingBodyWrapper(
+        body,
+        invocation,
+        {"body": body},
+        capture_content=False,
+    )
+
+    assert context.get_current() is before
+    if method == "aclose":
+        await stream.aclose()
+    else:
+        stream.close()
+    assert context.get_current() is before
+    assert body.closed
+    assert len(span_exporter.get_finished_spans()) == 1
+
+
+@pytest.mark.asyncio
+async def test_streaming_body_scopes_caller_error(
+    tracer_provider,
+    span_exporter,
+) -> None:
+    before = context.get_current()
+    invocation = TelemetryHandler(
+        tracer_provider=tracer_provider,
+    ).inference("bedrock", request_model="test-model")
+    body = _ContextCheckingAsyncBody(b"{}", invocation)
+    stream = AsyncBedrockStreamingBodyWrapper(
+        body,
+        invocation,
+        {"body": body},
+        capture_content=False,
+    )
+    error = RuntimeError("caller failed")
+
+    with pytest.raises(RuntimeError) as raised:
+        async with stream:
+            assert context.get_current() is before
+            raise error
+    assert raised.value is error
+    assert context.get_current() is before
+    assert body.closed
+    assert len(span_exporter.get_finished_spans()) == 1
+
+
+def test_streaming_body_scopes_abandonment(
+    tracer_provider,
+    span_exporter,
+    caplog,
+) -> None:
+    before = context.get_current()
+    invocation = TelemetryHandler(
+        tracer_provider=tracer_provider,
+    ).inference("bedrock", request_model="test-model")
+    body = _ContextCheckingAsyncBody(b"{}", invocation)
+    stream = AsyncBedrockStreamingBodyWrapper(
+        body,
+        invocation,
+        {"body": body},
+        capture_content=False,
+    )
+
+    assert context.get_current() is before
+    del stream
+    gc.collect()
 
     assert context.get_current() is before
     assert len(span_exporter.get_finished_spans()) == 1
