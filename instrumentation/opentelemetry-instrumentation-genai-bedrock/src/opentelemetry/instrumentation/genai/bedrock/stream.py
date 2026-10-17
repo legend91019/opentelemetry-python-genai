@@ -234,6 +234,7 @@ class BedrockConverseStreamWrapper(
         capture_content: bool = True,
     ) -> None:
         super().__init__(stream, invocation=invocation)
+        invocation.suspend()
         self._init_converse_stream(invocation, capture_content=capture_content)
 
 
@@ -251,6 +252,7 @@ class AsyncBedrockConverseStreamWrapper(
         capture_content: bool = True,
     ) -> None:
         super().__init__(stream, invocation=invocation)
+        invocation.suspend()
         self._init_converse_stream(invocation, capture_content=capture_content)
 
 
@@ -518,6 +520,7 @@ class BedrockInvokeModelStreamWrapper(
         capture_content: bool = True,
     ) -> None:
         super().__init__(stream, invocation=invocation)
+        invocation.suspend()
         self._init_invoke_model_stream(
             invocation, capture_content=capture_content
         )
@@ -537,6 +540,7 @@ class AsyncBedrockInvokeModelStreamWrapper(
         capture_content: bool = True,
     ) -> None:
         super().__init__(stream, invocation=invocation)
+        invocation.suspend()
         self._init_invoke_model_stream(
             invocation, capture_content=capture_content
         )
@@ -789,6 +793,7 @@ class BedrockAgentEventStreamWrapper(
         capture_content: bool = True,
     ) -> None:
         super().__init__(stream, invocation=invocation)
+        invocation.suspend()
         self._init_agent_stream(invocation, capture_content=capture_content)
 
 
@@ -806,6 +811,7 @@ class AsyncBedrockAgentEventStreamWrapper(
         capture_content: bool = True,
     ) -> None:
         super().__init__(stream, invocation=invocation)
+        invocation.suspend()
         self._init_agent_stream(invocation, capture_content=capture_content)
 
 
@@ -874,6 +880,7 @@ class BedrockRetrieveAndGenerateStreamWrapper(
         capture_content: bool = True,
     ) -> None:
         super().__init__(stream, invocation=invocation)
+        invocation.suspend()
         self._init_rag_stream(invocation, capture_content=capture_content)
 
 
@@ -891,4 +898,5 @@ class AsyncBedrockRetrieveAndGenerateStreamWrapper(
         capture_content: bool = True,
     ) -> None:
         super().__init__(stream, invocation=invocation)
+        invocation.suspend()
         self._init_rag_stream(invocation, capture_content=capture_content)
