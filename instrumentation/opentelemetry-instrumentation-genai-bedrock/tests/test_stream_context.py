@@ -22,6 +22,10 @@ from opentelemetry.instrumentation.genai.bedrock.stream import (
     BedrockInvokeModelStreamWrapper,
     BedrockRetrieveAndGenerateStreamWrapper,
 )
+from opentelemetry.semconv._incubating.attributes import (
+    error_attributes as ErrorAttributes,
+)
+from opentelemetry.trace import StatusCode
 from opentelemetry.util.genai.handler import TelemetryHandler
 
 
@@ -145,12 +149,62 @@ async def test_stream_activates_invocation_only_during_reads(
         assert list(stream) == []
 
     assert context.get_current() is before
-    assert len(span_exporter.get_finished_spans()) == 1
+    spans = span_exporter.get_finished_spans()
+    assert len(spans) == 1
+    if ending == "error":
+        assert spans[0].status.status_code == StatusCode.ERROR
+        assert spans[0].attributes is not None
+        assert (
+            spans[0].attributes[ErrorAttributes.ERROR_TYPE]
+            == "ConnectionError"
+        )
     assert not [
         record
         for record in caplog.records
         if record.name == "opentelemetry.context" and record.levelno >= 40
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("wrapper_cls", "asynchronous"), STREAM_WRAPPERS)
+async def test_stream_context_manager_records_caller_error(
+    tracer_provider,
+    span_exporter,
+    wrapper_cls: type,
+    asynchronous: bool,
+) -> None:
+    before = context.get_current()
+    invocation = TelemetryHandler(
+        tracer_provider=tracer_provider,
+    ).inference("bedrock", request_model="test-model")
+    error = ConnectionError("caller failed")
+    chunks: tuple[dict[str, Any], ...] = ({}, {})
+
+    async def aproduce() -> AsyncIterator[dict[str, Any]]:
+        for chunk in chunks:
+            await asyncio.sleep(0)
+            yield chunk
+
+    source = aproduce() if asynchronous else iter(chunks)
+    stream = wrapper_cls(source, invocation)
+
+    with pytest.raises(ConnectionError) as raised:
+        if asynchronous:
+            async with stream:
+                assert await anext(stream) is chunks[0]
+                raise error
+        else:
+            with stream:
+                assert next(stream) is chunks[0]
+                raise error
+
+    assert raised.value is error
+    assert context.get_current() is before
+    spans = span_exporter.get_finished_spans()
+    assert len(spans) == 1
+    assert spans[0].status.status_code == StatusCode.ERROR
+    assert spans[0].attributes is not None
+    assert spans[0].attributes[ErrorAttributes.ERROR_TYPE] == "ConnectionError"
 
 
 @pytest.mark.asyncio
