@@ -192,10 +192,12 @@ async def test_stream_context_manager_records_caller_error(
         if asynchronous:
             async with stream:
                 assert await anext(stream) is chunks[0]
+                assert context.get_current() is before
                 raise error
         else:
             with stream:
                 assert next(stream) is chunks[0]
+                assert context.get_current() is before
                 raise error
 
     assert raised.value is error
