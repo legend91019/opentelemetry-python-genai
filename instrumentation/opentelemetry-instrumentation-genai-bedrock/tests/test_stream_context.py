@@ -90,6 +90,30 @@ STREAM_WRAPPERS = [
 ]
 
 
+_AGENT_WRAPPER_TYPES = (
+    BedrockAgentEventStreamWrapper,
+    AsyncBedrockAgentEventStreamWrapper,
+)
+
+
+def _invocation_for(tracer_provider: Any, wrapper_cls: type) -> Any:
+    """Start the invocation the way patch.py does for the given wrapper type.
+
+    patch.py starts agent streams with ``handler.invoke_remote_agent()``, so those
+    wrappers receive a ``RemoteAgentInvocation``. Every other streaming wrapper in
+    this parametrisation is an inference stream started with
+    ``handler.inference()``.
+    """
+    handler = TelemetryHandler(tracer_provider=tracer_provider)
+    if wrapper_cls in _AGENT_WRAPPER_TYPES:
+        return handler.invoke_remote_agent(
+            provider="aws.bedrock",
+            server_address="bedrock-agent-runtime.us-east-1.amazonaws.com",
+            server_port=443,
+        )
+    return handler.inference("bedrock", request_model="test-model")
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("wrapper_cls", "asynchronous"), STREAM_WRAPPERS)
 @pytest.mark.parametrize("ending", ["drain", "close", "error"])
@@ -102,9 +126,7 @@ async def test_stream_activates_invocation_only_during_reads(
     ending: str,
 ) -> None:
     before = context.get_current()
-    invocation = TelemetryHandler(
-        tracer_provider=tracer_provider,
-    ).inference("bedrock", request_model="test-model")
+    invocation = _invocation_for(tracer_provider, wrapper_cls)
     error = ConnectionError("stream failed")
     chunk: dict[str, Any] = {}
 
@@ -174,9 +196,7 @@ async def test_stream_context_manager_records_caller_error(
     asynchronous: bool,
 ) -> None:
     before = context.get_current()
-    invocation = TelemetryHandler(
-        tracer_provider=tracer_provider,
-    ).inference("bedrock", request_model="test-model")
+    invocation = _invocation_for(tracer_provider, wrapper_cls)
     error = ConnectionError("caller failed")
     chunks: tuple[dict[str, Any], ...] = ({}, {})
 

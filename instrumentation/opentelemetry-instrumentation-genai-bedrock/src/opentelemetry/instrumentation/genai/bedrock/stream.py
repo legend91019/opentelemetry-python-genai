@@ -676,8 +676,10 @@ class AsyncBedrockStreamingBodyWrapper(_ObjectProxy):
     def __aiter__(self) -> AsyncIterator[bytes]:
         # ObjectProxy cannot forward this: Python looks special methods up on
         # the type, so without it 'async for' rejects the wrapper outright.
-        with self._execution_context():
-            return self._self_body_class.__aiter__(self)
+        # No execution scope here: __aiter__ only builds the iterator and does
+        # not read from the provider, so activating around it would have no
+        # effect. __anext__ scopes the reads themselves.
+        return self._self_body_class.__aiter__(self)
 
     async def __anext__(self) -> bytes:
         with self._execution_context():
